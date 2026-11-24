@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#4A1A5C">
+<link rel="manifest" href="manifest.json">
+<title>Land Dispute Navigator</title>
+<style>
+:root{--bg:#F5F3F8;--ink:#1E1A24;--pur:#4A1A5C;--gold:#D9A441;--card:#fff;--line:#DDD6E4;--ok:#2E7D4F;--bad:#B3261E;--mut:#6B6475}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--pur);color:#fff;padding:14px 16px;border-bottom:4px solid var(--gold)}
+header h1{margin:0;font-size:1.2rem}header p{margin:2px 0 0;font-size:.8rem;opacity:.85}
+#net{font-size:.75rem;margin-top:4px}
+nav{display:flex;background:#fff;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+nav button{flex:1;padding:12px 4px;border:0;background:none;font:inherit;font-weight:600;color:var(--mut);border-bottom:3px solid transparent}
+nav button.on{color:var(--pur);border-color:var(--pur)}
+main{max-width:640px;margin:0 auto;padding:14px 14px 60px}
+h2{font-size:1.15rem;margin:18px 0 8px}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,select,textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;font:inherit;background:#fff}
+input:focus,select:focus,textarea:focus,button:focus-visible{outline:3px solid var(--gold);outline-offset:1px}
+textarea{min-height:90px}
+.row{display:flex;gap:8px;align-items:center}
+.chk{display:flex;gap:10px;align-items:flex-start;font-weight:400;margin:8px 0}.chk input{width:22px;height:22px;margin:0;flex:none}
+.btn{display:block;width:100%;padding:13px;border:0;border-radius:8px;background:var(--pur);color:#fff;font:inherit;font-weight:700;margin-top:14px}
+.btn.alt{background:#fff;color:var(--pur);border:2px solid var(--pur)}
+.btn.sm{display:inline-block;width:auto;padding:8px 14px;margin:6px 6px 0 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:10px 0}
+.ref{font-size:1.6rem;font-weight:800;color:var(--pur);letter-spacing:.5px}
+.step{border-left:4px solid var(--gold);padding:4px 0 4px 12px;margin:12px 0}.step b{display:block}
+.step.urgent{border-color:var(--bad)}.step.urgent b{color:var(--bad)}
+.pill{display:inline-block;padding:2px 10px;border-radius:99px;background:var(--pur);color:#fff;font-size:.8rem}
+.mut{color:var(--mut);font-size:.85rem}
+.thumbs{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}.thumbs img{width:70px;height:70px;object-fit:cover;border-radius:6px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:6px 0}.bar i{display:block;height:100%;background:var(--ok)}
+.sms{background:#E9F5EC;border:1px solid #BFE0C8;border-radius:10px;padding:10px;font-size:.9rem;margin-top:10px}
+.err{color:var(--bad);font-weight:600;margin-top:8px}
+.tl{list-style:none;padding:0}.tl li{padding:6px 0 6px 14px;border-left:2px solid var(--line)}
+</style></head><body>
+<header><h1>Land Dispute Navigator</h1><p id="bn"></p><div id="net"></div></header>
+<nav><button data-v="report" class="on">Report</button><button data-v="track">Track</button><button data-v="officer">Officer</button></nav>
+<main id="app"></main>
+<script>
+const $=s=>document.querySelector(s),app=$('#app');
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let db;
+const openDB=()=>new Promise((ok,no)=>{const r=indexedDB.open('landnav',1);r.onupgradeneeded=()=>r.result.createObjectStore('cases',{keyPath:'ref'});r.onsuccess=()=>{db=r.result;ok()};r.onerror=no});
+const st=m=>db.transaction('cases',m).objectStore('cases');
+const getAll=()=>new Promise(r=>{const q=st('readonly').getAll();q.onsuccess=()=>r(q.result)});
+const getOne=k=>new Promise(r=>{const q=st('readonly').get(k);q.onsuccess=()=>r(q.result)});
+const putOne=c=>new Promise(r=>{const q=st('readwrite').put(c);q.onsuccess=()=>r()});
+/* ---- server sync: IndexedDB is the offline outbox, the Worker + D1 is the shared record ---- */
+const API_BASE='https://land-navigator.davydidi.workers.dev'; // your deployed Worker URL, no trailing slash
+const API=API_BASE+'/api';let token='',me=null;
+const rid=()=>{const a='ABCDEFGHJKMNPQRSTUVWXYZ23456789';let s='';crypto.getRandomValues(new Uint8Array(5)).forEach(b=>s+=a[b%a.length]);return 'LND-2026-'+s};
+const api=async(path,o={})=>{const r=await fetch(API+path,{...o,headers:{'content-type':'application/json',...(token?{authorization:'Bearer '+token}:{}),...(o.headers||{})}});if(!r.ok)throw new Error(r.status);return r.json()};
+async function sync(){if(!navigator.onLine)return;for(const c of await getAll()){if(c.synced)continue;try{await api('/cases',{method:'POST',body:JSON.stringify(c)});c.synced=true;await putOne(c)}catch(e){}}net()}
+
+const BANNER='Hack4Justice 2026 prototype. Use made-up data only.'; // set to '' at go-live
+/* ---- CONFIG: verify routes and offices with JLOS mentors before real use ---- */
+const DISTRICTS={Kampala:'Kampala District Land Office',Wakiso:'Wakiso District Land Office',Mukono:'Mukono District Land Office',Gulu:'Gulu District Land Office',Mbarara:'Mbarara District Land Office',Other:'your District Land Office'}; // confirm names, addresses and add districts
+const TYPES=['Boundary','Inheritance / succession','Eviction / land grabbing','Double titling / forged title','Other'];
+const TENURE=['Customary','Mailo','Freehold','Leasehold','Not sure'];
+const DOCS=['Land title or certificate','Sale or transfer agreement','LC1 / clan letter','Witness names and contacts','Receipts or tax payments'];
+const STATUS=['Submitted','Referred','In mediation','Resolved','Escalated to court'];
+function route(c){
+ const s=[];
+ if(c.threat)s.push({u:1,t:'Urgent: stay safe',d:'If you are threatened or being evicted, report to the nearest police station now and ask a legal aid provider about an urgent court order.'});
+ if(c.type.startsWith('Double'))s.push({t:'Check the land register',d:'Request a search at the Zonal Land Office or Registrar of Titles to confirm who is registered.'});
+ if(c.type.startsWith('Inherit'))s.push({t:'Get succession advice',d:'Contact the Administrator General or a legal aid clinic about the estate.'});
+ if(!c.mediated)s.push({t:'Try mediation first',d:'Go to LC1, clan or cultural leaders with your evidence pack. Most boundary and family disputes settle here, cheaply and fast.'});
+ s.push({t:'Formal route',d:c.mediated?'Mediation did not work. Take your evidence pack to the Magistrates Court, or ask legal aid to help you file.':'If mediation fails, escalate to the Magistrates Court. Your evidence pack is ready to attach.'});
+ return s}
+const score=c=>Math.round(100*((c.docs.length+(c.photos.length?1:0)+(c.gps?1:0))/(DOCS.length+2)));
+const stepsHTML=c=>route(c).map(x=>`<div class="step ${x.u?'urgent':''}"><b>${esc(x.t)}</b>${esc(x.d)}</div>`).join('');
+const smsHTML=(c,msg)=>`<div class="sms"><b>SMS (simulated) to ${esc(c.phone||'citizen')}:</b><br>${esc(msg)}</div>`;
+
+/* ---- views ---- */
+let photos=[],gps=null;
+function viewReport(){
+ photos=[];gps=null;
+ app.innerHTML=`<h2>Report a land dispute</h2><p class="mut">Works offline. Your report is saved on this phone.</p>
+ <label for="name">Your name</label><input id="name" autocomplete="off">
+ <label for="phone">Phone for SMS updates</label><input id="phone" inputmode="tel" placeholder="07XX XXX XXX">
+ <label for="dist">District</label><select id="dist">${Object.keys(DISTRICTS).map(d=>`<option>${d}</option>`).join('')}</select>
+ <label for="vil">Village / parish</label><input id="vil">
+ <label for="type">Type of dispute</label><select id="type">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select>
+ <label for="ten">Type of land ownership</label><select id="ten">${TENURE.map(t=>`<option>${t}</option>`).join('')}</select>
+ <label for="desc">What happened?</label><textarea id="desc" placeholder="Who is involved, when it started, what you want"></textarea>
+ <label class="chk"><input type="checkbox" id="thr">Someone is threatening me or trying to evict me now</label>
+ <label class="chk"><input type="checkbox" id="med">We already tried mediation (LC1, clan or elders)</label>
+ <h2>Evidence you have</h2>${DOCS.map((d,i)=>`<label class="chk"><input type="checkbox" class="doc" value="${esc(d)}">${esc(d)}</label>`).join('')}
+ <label for="ph">Photos of the land or documents (up to 4)</label><input id="ph" type="file" accept="image/*" capture="environment" multiple>
+ <div class="thumbs" id="th"></div>
+ <button class="btn alt" id="gpsb" type="button">Pin plot location (GPS)</button><div class="mut" id="gpst"></div>
+ <label class="chk" style="margin-top:16px"><input type="checkbox" id="con">I agree my report is stored and shared only with the officers handling it.</label>
+ <div class="err" id="err"></div><button class="btn" id="sub">Save report and get my case number</button>`;
+ $('#ph').onchange=async e=>{for(const f of [...e.target.files].slice(0,4-photos.length))photos.push(await shrink(f));$('#th').innerHTML=photos.map(p=>`<img src="${p}" alt="Evidence photo">`).join('')};
+ $('#gpsb').onclick=()=>{$('#gpst').textContent='Locating...';navigator.geolocation.getCurrentPosition(p=>{gps={lat:+p.coords.latitude.toFixed(5),lng:+p.coords.longitude.toFixed(5)};$('#gpst').textContent=`Pinned: ${gps.lat}, ${gps.lng}`},()=>{$('#gpst').textContent='Could not get location. Allow location access and try again.'},{enableHighAccuracy:true,timeout:15000})};
+ $('#sub').onclick=submit}
+function shrink(f){return new Promise(r=>{const i=new Image();i.onload=()=>{const k=Math.min(1,800/Math.max(i.width,i.height)),c=document.createElement('canvas');c.width=i.width*k;c.height=i.height*k;c.getContext('2d').drawImage(i,0,0,c.width,c.height);r(c.toDataURL('image/jpeg',.6))};i.src=URL.createObjectURL(f)})}
+async function submit(){
+ const v=id=>$('#'+id).value.trim(),err=m=>$('#err').textContent=m;
+ if(!v('name')||!v('vil')||!v('desc'))return err('Fill in your name, village and what happened.');
+ if(!$('#con').checked)return err('Please tick the consent box to continue.');
+ const ref=rid(),now=new Date().toISOString();
+ const c={ref,name:v('name'),phone:v('phone'),district:v('dist'),village:v('vil'),type:v('type'),tenure:v('ten'),desc:v('desc'),
+  threat:$('#thr').checked,mediated:$('#med').checked,docs:[...document.querySelectorAll('.doc:checked')].map(x=>x.value),photos,gps,
+  consent:true,synced:false,status:'Submitted',log:[{t:now,s:'Submitted',n:'Report created on device'}]};
+ await putOne(c);await sync();
+ app.innerHTML=`<h2>Report saved</h2><div class="card"><div class="mut">Your case number</div><div class="ref">${ref}</div>
+ <p class="mut">Keep this number. Use it on the Track tab. ${(await getOne(ref)).synced?'Uploaded: officers can see it.':'Saved on this phone. It uploads automatically when you are online.'}</p>
+ <div class="mut">Evidence pack: ${score(c)}% complete</div><div class="bar"><i style="width:${score(c)}%"></i></div></div>
+ <h2>Your suggested path</h2>${stepsHTML(c)}
+ <div class="card"><b>Where to go</b><br>${esc(DISTRICTS[c.district])}</div>
+ <p class="mut">${c.phone?'You will get an SMS when this reaches the system and when its status changes.':'No phone number given, so no SMS updates. Use the Track tab.'}</p>
+ <button class="btn" onclick="viewReport()">Report another dispute</button>`}
+
+function caseHTML(c,staff){
+ return `<div class="card"><div class="ref">${esc(c.ref)}</div><span class="pill">${esc(c.status)}</span>
+ <p><b>${esc(c.type)}</b> · ${esc(c.tenure)} · ${esc(c.village)}, ${esc(c.district)}</p>
+ ${staff?`<p><b>${esc(c.name)}</b> · ${esc(c.phone)}</p><p>${esc(c.desc)}</p>`:''}
+ <div class="mut">Evidence pack: ${score(c)}% (${c.docs.length} documents, ${c.photos.length} photos${c.gps?', GPS pinned':''})</div><div class="bar"><i style="width:${score(c)}%"></i></div>
+ ${staff&&c.gps?`<a href="https://www.openstreetmap.org/?mlat=${c.gps.lat}&mlon=${c.gps.lng}#map=17/${c.gps.lat}/${c.gps.lng}" target="_blank" rel="noopener">View plot on map</a>`:''}
+ ${staff?`<div class="thumbs">${c.photos.map(p=>`<img src="${p}" alt="Evidence photo">`).join('')}</div>`:''}</div>
+ <h2>Progress</h2><ul class="tl">${c.log.map(l=>`<li><b>${esc(l.s)}</b> <span class="mut">${new Date(l.t).toLocaleString()}</span><br>${esc(l.n)}</li>`).join('')}</ul>
+ <h2>Suggested path</h2>${stepsHTML(c)}`}
+
+function viewTrack(){
+ app.innerHTML=`<h2>Track a case</h2><label for="rf">Case number</label><input id="rf" placeholder="LND-2026-0001" autocapitalize="characters">
+ <button class="btn" id="go">Check status</button><div id="out"></div>`;
+ $('#go').onclick=async()=>{const k=$('#rf').value.trim().toUpperCase();let c,off=0;try{c=await api('/cases/'+encodeURIComponent(k))}catch(e){c=await getOne(k);off=1}
+  $('#out').innerHTML=c?(off?'<p class="mut">Showing the copy saved on this phone. Connect to see the latest status.</p>':'')+caseHTML(c,false):'<p class="err">No case found with that number on this device. Check the number and try again.</p>'}}
+
+let staff=false;
+async function viewOfficer(){
+ if(!staff){app.innerHTML=`<h2>Officer sign-in</h2><p class="mut">Only signed-in officers see names, phone numbers and photos.</p>
+  <label for="un">Username</label><input id="un" autocomplete="username" autocapitalize="none"><label for="pw">Password</label><input id="pw" type="password" autocomplete="current-password"><div class="err" id="pe"></div><button class="btn" id="in">Sign in</button>`;
+  $('#in').onclick=async()=>{try{const r=await api('/login',{method:'POST',body:JSON.stringify({username:$('#un').value.trim(),password:$('#pw').value})});token=r.token;me=r;staff=true;viewOfficer()}catch(e){$('#pe').textContent=e.message==='429'?'Too many attempts. Wait 15 minutes.':'Wrong username or password, or no connection.'}};return}
+ let cs=[],bad='';try{cs=await api('/cases')}catch(e){if(e.message==='401'){staff=false;token='';return viewOfficer()}bad='<p class="err">Cannot reach the server. Check your connection.</p>'}
+ app.innerHTML=`<h2>Case queue (${cs.length})</h2><button class="btn alt sm" id="out">Sign out</button>${bad}${me&&me.role==='admin'?`<div class="card"><b>Add officer</b><input id="nu" aria-label="Username" placeholder="username"><input id="nm" aria-label="Full name" placeholder="full name"><input id="np" type="password" aria-label="Password" placeholder="password (10+ characters)"><select id="nr" aria-label="Role"><option>officer</option><option>admin</option></select><button class="btn sm" id="na">Create officer</button><div class="mut" id="nmsg"></div></div>`:''}
+ ${cs.length?cs.map(c=>`<div class="card"><b>${esc(c.ref)}</b> <span class="pill">${esc(c.status)}</span><br>${esc(c.type)} · ${esc(c.district)}${c.threat?' · <b style="color:var(--bad)">URGENT</b>':''}<br><button class="btn sm" data-r="${esc(c.ref)}">Open</button></div>`).join(''):'<p class="mut">No cases yet. Report one on the Report tab.</p>'}`;
+ $('#out').onclick=()=>{staff=false;token='';me=null;viewOfficer()};
+ if($('#na'))$('#na').onclick=async()=>{try{await api('/officers',{method:'POST',body:JSON.stringify({username:$('#nu').value.trim(),name:$('#nm').value.trim(),password:$('#np').value,role:$('#nr').value})});$('#nmsg').textContent='Officer created.'}catch(e){$('#nmsg').textContent='Could not create officer. The username may be taken, or the password is under 10 characters.'}};
+ app.querySelectorAll('[data-r]').forEach(b=>b.onclick=()=>openCase(b.dataset.r))}
+async function openCase(ref){
+ let c;try{c=await api('/cases/'+ref+'?full=1')}catch(e){return viewOfficer()}
+ app.innerHTML=`<button class="btn alt sm" onclick="viewOfficer()">Back to queue</button>${caseHTML(c,true)}
+ <h2>Update case</h2><label for="ns">New status</label><select id="ns">${STATUS.map(s=>`<option ${s===c.status?'selected':''}>${s}</option>`).join('')}</select>
+ <label for="nn">Note</label><input id="nn" placeholder="e.g. Mediation set for Friday"><button class="btn" id="up">Save update</button><div id="sm"></div>`;
+ $('#up').onclick=async()=>{const s=$('#ns').value,note=$('#nn').value.trim()||'Status updated';
+  let r;try{r=await api('/cases/'+ref,{method:'PATCH',body:JSON.stringify({status:s,note})})}catch(e){$('#sm').innerHTML='<p class="err">Update failed. Check your connection.</p>';return}
+  await openCase(ref);$('#sm').innerHTML=r.sms?'<p class="mut">SMS sent to the citizen.</p>':'<p class="mut">No SMS sent (no phone number, or SMS is not set up).</p>'}}
+
+/* ---- boot ---- */
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));({report:viewReport,track:viewTrack,officer:viewOfficer})[b.dataset.v]()});
+const net=async()=>{const p=db?(await getAll()).filter(c=>!c.synced).length:0;$('#net').textContent=(navigator.onLine?'Online':'Offline: reports save on this phone')+(p?` · ${p} waiting to upload`:'')};
+addEventListener('online',()=>{sync();net()});addEventListener('offline',net);
+$('#bn').textContent=BANNER;
+openDB().then(()=>{viewReport();sync();net()});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+</script></body></html>
